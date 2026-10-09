@@ -21,6 +21,9 @@ pub mod prices;
 pub mod record;
 /// The bounded queue carrying those records to the task that sends them.
 pub mod record_emitter;
+/// `POST /v1/replay/advance` for a recorded market.
+#[cfg(feature = "replay")]
+pub(crate) mod replay;
 /// Builds re-issuable, signature-free representation of a quote request for replay logging.
 pub mod request_capture;
 #[cfg(feature = "experimental")]
@@ -149,6 +152,9 @@ pub struct TychoHeadStatus {
     pub last_update_ms: u64,
 }
 
+/// The head block a recorded market last applied, and the moment it was first seen.
+type ReplayHeadSeen = Arc<std::sync::Mutex<Option<(u64, Instant)>>>;
+
 /// Simple tracker for service health metrics.
 ///
 /// Reads the last update timestamp from MarketState to determine how fresh the market data is,
@@ -159,6 +165,9 @@ pub struct HealthTracker {
     derived_data: SharedDerivedDataRef,
     gas_price_stale_threshold: Option<Duration>,
     created_at: Instant,
+    /// Set when serving a recorded market: the head block and the moment it was first seen, so
+    /// age is measured from when the replay applied the block rather than from its timestamp.
+    replay_head_seen: Option<ReplayHeadSeen>,
 }
 
 impl HealthTracker {
@@ -169,7 +178,16 @@ impl HealthTracker {
             derived_data,
             gas_price_stale_threshold: None,
             created_at: Instant::now(),
+            replay_head_seen: None,
         }
+    }
+
+    /// Measures block age from when each block was first seen instead of from its timestamp.
+    ///
+    /// A recorded market's blocks carry past timestamps, which would make it permanently stale.
+    pub(crate) fn with_replay_clock(mut self, replaying: bool) -> Self {
+        self.replay_head_seen = replaying.then(|| Arc::new(std::sync::Mutex::new(None)));
+        self
     }
 
     /// Sets the gas price staleness threshold. Health returns 503 when exceeded.
@@ -186,7 +204,23 @@ impl HealthTracker {
             .await
             .last_updated()
             .cloned()?;
-        let last_update_ms = block_age_ms_at_time(head.timestamp(), SystemTime::now());
+        let last_update_ms = match &self.replay_head_seen {
+            None => block_age_ms_at_time(head.timestamp(), SystemTime::now()),
+            Some(seen) => {
+                let mut seen = seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let first_seen = match *seen {
+                    Some((number, at)) if number == head.number() => at,
+                    _ => {
+                        let now = Instant::now();
+                        *seen = Some((head.number(), now));
+                        now
+                    }
+                };
+                first_seen.elapsed().as_millis() as u64
+            }
+        };
         Some(TychoHeadStatus { head, last_update_ms })
     }
 

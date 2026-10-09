@@ -21,6 +21,7 @@ futures.workspace = true
 tokio-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zstd = { workspace = true, optional = true }
 serde_with.workspace = true
 num-bigint.workspace = true
 num-rational.workspace = true
@@ -52,6 +53,8 @@ alloy = { workspace = true, features = [
 
 [features]
 test-utils = []
+# `fynd serve --replay`: serve a recorded market block by block, stepped by a client.
+replay = ["dep:zstd"]
 # Per-pool simulation metering: counts and times every `get_amount_out` a solve makes, splits it
 # by protocol and by solve pass, and reports it. Off by default — measuring a swap costs two clock
 # reads on the hottest path in the solver. With it off, solving calls the panic guard directly.

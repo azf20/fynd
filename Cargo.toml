@@ -21,6 +21,9 @@ metrics = ["dep:actix-web", "dep:metrics-exporter-prometheus", "dep:metrics"]
 # their response shapes are experimental and can change in any release. Without this,
 # a crate depending on `fynd` has no way to reach them.
 experimental = ["fynd-rpc/experimental"]
+# `fynd serve --replay`: serve a recorded market block by block, stepped through
+# POST /v1/replay/advance, instead of the live Tycho stream.
+replay = ["fynd-rpc/replay"]
 # Uses jemalloc as the global allocator. Under concurrent load jemalloc returns
 # freed pages to the OS instead of retaining them as RSS the way glibc's per-thread
 # arenas do; disable with `--no-default-features` for minimal builds. Pulls in `metrics`

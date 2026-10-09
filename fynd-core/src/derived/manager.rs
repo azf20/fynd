@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use metrics::{counter, gauge, histogram};
 use rustc_hash::{FxHashMap, FxHashSet};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tracing::{error, info, trace, warn};
 use tycho_simulation::tycho_common::models::Address;
 
@@ -249,6 +249,8 @@ pub struct ComputationManager {
     computations: Vec<Box<dyn ErasedComputation>>,
     /// Event broadcaster for derived data updates.
     event_tx: broadcast::Sender<DerivedDataEvent>,
+    /// The last block every computation has run for (0 before the first).
+    completed_tx: watch::Sender<u64>,
 }
 
 /// A dependency-ordered execution plan for the registered computations.
@@ -289,6 +291,7 @@ impl ComputationManager {
                 store: DerivedData::new_shared(),
                 computations: Vec::new(),
                 event_tx,
+                completed_tx: watch::Sender::new(0),
             },
             event_rx,
         )
@@ -323,6 +326,14 @@ impl ComputationManager {
     /// Returns a reference to the shared derived data store.
     pub fn store(&self) -> SharedDerivedDataRef {
         Arc::clone(&self.store)
+    }
+
+    /// Returns a receiver of the last block every computation has run for.
+    ///
+    /// A replay stepped by its client waits on it, so a step returns only once quotes see the
+    /// new block's derived data.
+    pub fn completed_blocks(&self) -> watch::Receiver<u64> {
+        self.completed_tx.subscribe()
     }
 
     /// Returns the event sender for workers to subscribe.
@@ -537,6 +548,7 @@ impl ComputationManager {
             total_ms = total_start.elapsed().as_millis(),
             "all derived computations complete"
         );
+        self.completed_tx.send_replace(block);
     }
 
     ////// Recovers from a broadcast lag without a full-topology recompute.

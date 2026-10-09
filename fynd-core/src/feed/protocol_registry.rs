@@ -765,7 +765,7 @@ fn select_decodable_systems(
 ///
 /// Fails when the protocol list is invalid, the hook handlers cannot be set up, or a message
 /// does not decode (e.g. it carries no block).
-#[cfg(feature = "test-utils")]
+#[cfg(any(feature = "test-utils", feature = "replay"))]
 pub async fn decode_recorded_messages(
     chain: Chain,
     protocols: &[String],

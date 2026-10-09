@@ -40,6 +40,9 @@ pub struct FyndRPCBuilder {
     collector_url: Option<String>,
     /// Caller routes registered before the defaults; see [`Self::configure_routes`].
     route_overrides: Option<RouteConfigurator>,
+    /// A recorded market served instead of the live Tycho stream; see [`Self::recorded_feed`].
+    #[cfg(feature = "replay")]
+    recorded_feed: Option<fynd_core::feed::recorded::RecordedFeed>,
 }
 
 impl FyndRPCBuilder {
@@ -82,6 +85,8 @@ impl FyndRPCBuilder {
             hosted_swagger_url: None,
             collector_url: None,
             route_overrides: None,
+            #[cfg(feature = "replay")]
+            recorded_feed: None,
         })
     }
 
@@ -348,6 +353,17 @@ impl FyndRPCBuilder {
         self
     }
 
+    /// Serves a recorded market instead of the live Tycho stream.
+    ///
+    /// Quotes are then taken at the recording's blocks, each with its own gas price, and
+    /// `POST /v1/replay/advance` steps to the next block. Health measures block age from when the
+    /// replay applied the block, not from the block's timestamp, which lies in the past.
+    #[cfg(feature = "replay")]
+    pub fn recorded_feed(mut self, recorded: fynd_core::feed::recorded::RecordedFeed) -> Self {
+        self.recorded_feed = Some(recorded);
+        self
+    }
+
     /// Assemble all components and return a running [`FyndRPC`] server handle.
     ///
     /// Starts all worker pools and binds the HTTP listener. Returns an error if any component
@@ -359,9 +375,23 @@ impl FyndRPCBuilder {
             "starting fynd"
         );
 
-        let parts = self
-            .fynd_builder
-            .build()
+        #[cfg(feature = "replay")]
+        let (solver, route_overrides, replaying) = match self.recorded_feed {
+            Some(recorded) => {
+                let control = recorded.control();
+                (
+                    self.fynd_builder
+                        .build_recorded(recorded),
+                    Some(crate::api::replay::with_advance_route(control, self.route_overrides)),
+                    true,
+                )
+            }
+            None => (self.fynd_builder.build(), self.route_overrides, false),
+        };
+        #[cfg(not(feature = "replay"))]
+        let (solver, route_overrides, replaying) =
+            (self.fynd_builder.build(), self.route_overrides, false);
+        let parts = solver
             .map_err(|e| anyhow::anyhow!("{}", e))?
             .into_parts();
 
@@ -388,7 +418,8 @@ impl FyndRPCBuilder {
 
         let health_tracker =
             HealthTracker::new(parts.market_data().clone(), Arc::clone(parts.derived_data()))
-                .with_gas_price_stale_threshold(self.gas_price_stale_threshold);
+                .with_gas_price_stale_threshold(self.gas_price_stale_threshold)
+                .with_replay_clock(replaying);
 
         #[cfg(feature = "experimental")]
         let gas_token = {
@@ -435,7 +466,6 @@ impl FyndRPCBuilder {
         );
 
         let hosted_swagger_url = self.hosted_swagger_url;
-        let route_overrides = self.route_overrides;
         let server = HttpServer::new(move || {
             App::new()
                 .wrap(tracing_actix_web::TracingLogger::default())

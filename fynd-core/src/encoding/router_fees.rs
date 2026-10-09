@@ -89,6 +89,12 @@ pub struct RouterFees {
 }
 
 impl RouterFees {
+    /// No router fee, at the production fee-unit precision: for a solver that reads no
+    /// FeeCalculator, such as one serving a recorded market.
+    pub fn zero() -> Self {
+        Self::new(FALLBACK_MAX_FEE_UNITS, 0, 0, FxHashMap::default())
+    }
+
     /// Creates a fee configuration from on-chain values. `custom_fees` maps a client to its
     /// resolved `(fee_on_output, fee_on_client_fee)` pair in fee units.
     pub fn new(

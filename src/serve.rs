@@ -313,15 +313,27 @@ async fn setup_solver(
         .min_tvl
         .unwrap_or_else(|| chain.default_tvl_threshold(TvlThresholdTier::Low));
 
-    let protocols = resolve_protocols(
-        &tycho_url,
-        args.tycho_api_key.as_deref(),
-        !args.disable_tls,
-        chain,
-        &args.protocols,
-    )
-    .await
-    .map_err(|e| SolverError::SetupError(format!("failed to resolve protocols: {e}")))?;
+    #[cfg(feature = "replay")]
+    let recorded = load_recording(args, chain).await?;
+    #[cfg(feature = "replay")]
+    let recorded_protocols = recorded
+        .as_ref()
+        .map(|recorded| recorded.protocols().to_vec());
+    #[cfg(not(feature = "replay"))]
+    let recorded_protocols: Option<Vec<String>> = None;
+
+    let protocols = match recorded_protocols {
+        Some(protocols) => protocols,
+        None => resolve_protocols(
+            &tycho_url,
+            args.tycho_api_key.as_deref(),
+            !args.disable_tls,
+            chain,
+            &args.protocols,
+        )
+        .await
+        .map_err(|e| SolverError::SetupError(format!("failed to resolve protocols: {e}")))?,
+    };
 
     info!(?protocols, "starting with {} protocol(s)", protocols.len());
 
@@ -385,6 +397,10 @@ async fn setup_solver(
         .unwrap_or_else(|| default_calldata_watermark(args.tycho_api_key.as_deref()));
     info!(watermark, "stamping encoded calldata");
     builder = builder.calldata_watermark(watermark.as_bytes());
+    #[cfg(feature = "replay")]
+    if let Some(recorded) = recorded {
+        builder = builder.recorded_feed(recorded);
+    }
 
     // Build and start solver
     let solver = configure(builder)
@@ -392,6 +408,28 @@ async fn setup_solver(
         .map_err(|e| SolverError::SetupError(format!("failed to start solver: {}", e)))?;
 
     Ok(solver)
+}
+
+/// Loads the recording `--replay` names, checked against `--chain`; `None` when serving live.
+#[cfg(feature = "replay")]
+async fn load_recording(
+    args: &cli::ServeArgs,
+    chain: tycho_simulation::tycho_common::models::Chain,
+) -> Result<Option<fynd_core::feed::recorded::RecordedFeed>, SolverError> {
+    let (Some(recording), Some(gas)) = (&args.replay, &args.replay_gas) else {
+        return Ok(None);
+    };
+    let recorded = fynd_core::feed::recorded::RecordedFeed::load(recording, gas)
+        .await
+        .map_err(|e| SolverError::SetupError(format!("failed to load recording: {e}")))?;
+    if recorded.chain() != chain {
+        return Err(SolverError::SetupError(format!(
+            "recording is for {} but --chain is {chain}",
+            recorded.chain()
+        )));
+    }
+    info!(path = ?recording, "serving a recorded market instead of the live stream");
+    Ok(Some(recorded))
 }
 
 /// Runs the solver exactly as `fynd serve` does.

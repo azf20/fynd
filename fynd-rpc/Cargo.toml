@@ -37,6 +37,8 @@ tycho-execution.workspace = true
 
 [features]
 experimental = []
+# `POST /v1/replay/advance` and `FyndRPCBuilder::recorded_feed`: serve a recorded market.
+replay = ["fynd-core/replay"]
 
 [dev-dependencies]
 fynd-core = { workspace = true, features = ["test-utils"] }

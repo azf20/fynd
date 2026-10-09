@@ -16,6 +16,9 @@ pub mod market_data;
 pub(crate) mod metrics_sampler;
 /// Protocol system registry: maps protocol names to their Tycho identifiers.
 pub mod protocol_registry;
+/// Recorded market replay: serves a recording block by block, stepped by a client.
+#[cfg(feature = "replay")]
+pub mod recorded;
 /// Tycho WebSocket feed: connects to the Tycho data stream and populates `MarketState`.
 pub mod tycho_feed;
 

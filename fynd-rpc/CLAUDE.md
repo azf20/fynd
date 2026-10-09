@@ -17,6 +17,7 @@ infrastructure.
 | Feature | Effect |
 |---|---|
 | `experimental` | Enables the `GET /v1/prices` and `GET /v1/tokens` endpoints plus derived/market data access in `AppState` |
+| `replay` | `FyndRPCBuilder::recorded_feed` and `POST /v1/replay/advance`: serve a recorded market instead of the live Tycho stream (`fynd serve --replay`) |
 
 ## API Endpoints
 
@@ -25,6 +26,7 @@ infrastructure.
 | `POST /v1/quote` | `handlers::quote` | Submit orders, receive optimal routes. The `x-exclusive-access: true` request header (set by the authenticating proxy, never by the caller) allocates exclusive-access worker pools to the request; any other value or none restricts it to public pools. The `x-disable-slippage-taking: true` request header (same proxy-only trust model) makes the encoder attach server-signed zero-fee `ClientFeeParams` so the FeeCalculator applies the signer's positive-slippage exemption — which also makes the signer the request's fee client in place of any other attribution, and gives the quote a ~120s deadline it did not have before. Both headers are only meaningful when the server is unreachable except through that proxy. Composed of the public `validate_quote_request` / `disable_slippage_taking::apply` / `RequestRecord::capture` / `QuoteRecord::build` / `log_quote_outcome` helpers, for embedders writing their own variant |
 | `GET /v1/health` | `handlers::health` | Health check (data freshness, derived data readiness, gas-price staleness, solver pool count). Returns 503 when market data is stale, derived data is not ready, or the gas price is stale |
 | `GET /v1/info` | `handlers::info` | Static metadata about this Fynd instance (version, chain, spender address) |
+| `POST /v1/replay/advance` | `replay::advance` | Steps a recorded market (`replay` feature only) to the next block, or with `?to_block=N` on to the first block at or after N. Answers with the block now served once its derived data is computed; at the recording's end it returns the last block with `done: true` |
 | `GET /v1/prices` | `handlers::get_prices` | Token prices, spot prices, component depths (experimental feature only) |
 | `GET /v1/tokens` | `handlers::get_tokens` | Graph tokens with metadata and liquidity/degree ranking, lazily cached per derived-data update (experimental feature only) |
 

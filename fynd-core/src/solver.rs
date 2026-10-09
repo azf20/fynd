@@ -457,6 +457,17 @@ struct CustomPoolEntry {
     configure: Box<dyn FnOnce(WorkerPoolBuilder) -> WorkerPoolBuilder + Send>,
 }
 
+/// Whether the background tasks that read chain state (gas price, router fees) run.
+#[derive(Clone, Copy)]
+enum ChainReads {
+    /// Poll the chain head, as a live deployment does.
+    Live,
+    /// Read nothing: a recorded market supplies its own gas prices, and the chain head would be
+    /// the wrong block.
+    #[cfg_attr(not(feature = "replay"), allow(dead_code))]
+    None,
+}
+
 /// All components produced by [`FyndBuilder::assemble_components`], consumed by
 /// [`FyndBuilder::build`] and [`FyndBuilder::build_with_pending`].
 struct BuiltComponents {
@@ -1131,7 +1142,37 @@ impl FyndBuilder {
     /// Returns [`SolverBuildError`] if any component fails to initialize.
     pub fn build(self) -> Result<Solver, SolverBuildError> {
         let components = self.assemble_components()?;
-        Ok(Self::spawn_tasks(components, |tycho_feed, _pending_indexers| tycho_feed.run()))
+        Ok(Self::spawn_tasks(components, ChainReads::Live, |tycho_feed, _pending_indexers| {
+            tycho_feed.run()
+        }))
+    }
+
+    /// Assembles the solver and feeds it a recorded market instead of a live Tycho stream.
+    ///
+    /// The recording is applied one block per step (see
+    /// [`RecordedFeed`](crate::feed::recorded::RecordedFeed)), each block with its
+    /// own gas price from the recording's schedule. Nothing reads the chain: the live gas price
+    /// and router fee fetchers are not started, and router fees are zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError`] if any component fails to initialize.
+    #[cfg(feature = "replay")]
+    pub fn build_recorded(
+        self,
+        recorded: crate::feed::recorded::RecordedFeed,
+    ) -> Result<Solver, SolverBuildError> {
+        let components = self.assemble_components()?;
+        components
+            .router_fees
+            .set(crate::encoding::router_fees::RouterFees::zero());
+        let market_data = components.market_data.clone();
+        let derived_done = components
+            .computation_manager
+            .completed_blocks();
+        Ok(Self::spawn_tasks(components, ChainReads::None, move |tycho_feed, _pending_indexers| {
+            recorded.run(tycho_feed, market_data, derived_done)
+        }))
     }
 
     /// Assembles and starts all solver components, also returning a [`PendingBlockProcessor`]
@@ -1213,7 +1254,7 @@ impl FyndBuilder {
 
     fn build_with_feed_setup(self, setup: PendingFeedSetup) -> Result<Solver, SolverBuildError> {
         let components = self.assemble_components()?;
-        Ok(Self::spawn_tasks(components, move |tycho_feed, pending_indexers| {
+        Ok(Self::spawn_tasks(components, ChainReads::Live, move |tycho_feed, pending_indexers| {
             tycho_feed.run_with_pending(setup, pending_indexers)
         }))
     }
@@ -1222,7 +1263,11 @@ impl FyndBuilder {
     ///
     /// `run_feed` chooses how the Tycho feed runs; everything else is the same for every build
     /// path.
-    fn spawn_tasks<F, Fut>(components: BuiltComponents, run_feed: F) -> Solver
+    fn spawn_tasks<F, Fut>(
+        components: BuiltComponents,
+        chain_reads: ChainReads,
+        run_feed: F,
+    ) -> Solver
     where
         F: FnOnce(TychoFeed, Vec<(String, Box<dyn TxDeltaIndexer>)>) -> Fut,
         Fut: Future<Output = Result<(), DataFeedError>> + Send + 'static,
@@ -1253,15 +1298,20 @@ impl FyndBuilder {
                 tracing::error!(error = %e, "tycho feed error");
             }
         });
-        let gas_price_handle = tokio::spawn(async move {
-            gas_price_fetcher.run().await;
-        });
+        let gas_price_handle = match chain_reads {
+            ChainReads::Live => tokio::spawn(async move {
+                gas_price_fetcher.run().await;
+            }),
+            // The server treats a finished gas task as a failure, so the stand-in never ends.
+            ChainReads::None => tokio::spawn(std::future::pending::<()>()),
+        };
         let metrics_sampler =
             MetricsSampler::new(market_data.clone(), defaults::METRICS_SAMPLE_INTERVAL);
         let metrics_sampler_handle = tokio::spawn(async move { metrics_sampler.run().await });
-        let router_fee_handle = match router_fee_fetcher {
-            Some(fetcher) => tokio::spawn(async move { fetcher.run().await }),
-            None => tokio::spawn(async {}),
+        let router_fee_handle = match (chain_reads, router_fee_fetcher) {
+            (ChainReads::Live, Some(fetcher)) => tokio::spawn(async move { fetcher.run().await }),
+            (ChainReads::Live, None) => tokio::spawn(async {}),
+            (ChainReads::None, _) => tokio::spawn(std::future::pending::<()>()),
         };
         let computation_handle = tokio::spawn(async move {
             computation_manager
@@ -1557,16 +1607,10 @@ impl Solver {
         };
 
         let router_address = encoder.router_address().cloned();
-        // Replay mode has no FeeCalculator to read; seed a zero-fee config at the standard
-        // 8-decimal scale so the recording-based solver reports ready (integration tests do
-        // not exercise encoding).
+        // Replay mode has no FeeCalculator to read; seed a zero-fee config so the
+        // recording-based solver reports ready (integration tests do not exercise encoding).
         let router_fees = encoder.router_fees();
-        router_fees.set(crate::encoding::router_fees::RouterFees::new(
-            100_000_000,
-            0,
-            0,
-            rustc_hash::FxHashMap::default(),
-        ));
+        router_fees.set(crate::encoding::router_fees::RouterFees::zero());
         let router_config = WorkerPoolRouterConfig::default()
             .with_timeout(Duration::from_millis(max_timeout_ms.max(5000)))
             .with_min_responses(defaults::ROUTER_MIN_RESPONSES);

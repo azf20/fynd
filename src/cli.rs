@@ -200,6 +200,19 @@ pub struct ServeArgs {
     #[arg(long, env = "FYND_COLLECTOR_URL")]
     pub collector_url: Option<String>,
 
+    /// Serve a recorded market (a `record-market` `.json.zst` recording) instead of the live
+    /// Tycho stream. The first block is served from the start; `POST /v1/replay/advance` steps to
+    /// the next, or `?to_block=N` on to block N. Protocols come from the recording; Tycho and the
+    /// RPC are not contacted. Requires `--replay-gas`.
+    #[cfg(feature = "replay")]
+    #[arg(long, requires = "replay_gas")]
+    pub replay: Option<std::path::PathBuf>,
+
+    /// Gas price for each recorded block, as JSON `{"<block number>": "<wei>", ...}`.
+    #[cfg(feature = "replay")]
+    #[arg(long, requires = "replay")]
+    pub replay_gas: Option<std::path::PathBuf>,
+
     /// Port for the Prometheus metrics HTTP server (requires `metrics` feature).
     #[cfg(feature = "metrics")]
     #[arg(long, default_value_t = METRICS_PORT, env)]
